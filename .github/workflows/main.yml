@@ -1,266 +1,83 @@
-name: Windows VPS Setup
+name: RDP
 on:
   workflow_dispatch:
-    inputs:
-      duration:
-        description: 'VPS Duration (minutes)'
-        required: false
-        default: '10080'
-        type: string
-
 jobs:
-  secure-vps:
+  secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: ${{ github.event.inputs.duration || 10080 }}
-    
+    timeout-minutes: 10080
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Configure Windows Server Settings
+      - name: Configure Core RDP Settings
         run: |
-          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          
-          # Configure firewall rules
-          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
-          netsh advfirewall firewall delete rule name="VPS-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="VPS-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          netsh advfirewall firewall add rule name="VPS-Web" dir=in action=allow protocol=TCP localport=80
-          netsh advfirewall firewall add rule name="VPS-WebSSL" dir=in action=allow protocol=TCP localport=443
-          netsh advfirewall firewall add rule name="VPS-SSH" dir=in action=allow protocol=TCP localport=22
-          netsh advfirewall firewall add rule name="VPS-Ping" dir=in action=allow protocol=ICMPv4
-          
-          # Restart Terminal Services
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
-          Write-Host "✅ Windows Server configuration completed"
 
-      - name: Create Administrative User
+      - name: Create RDP User with Static Password
         run: |
-          $username = "VPSAdmin"
-          $password = "Admin@VPS123"
+          $password = "admin@123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # Remove user if exists and create new
-          Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
-          New-LocalUser -Name $username -Password $securePass -AccountNeverExpires -PasswordNeverExpires
-          
-          # Add to groups
-          Add-LocalGroupMember -Group "Administrators" -Member $username
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
-          Add-LocalGroupMember -Group "Remote Management Users" -Member $username
-          
-          # Enable the account
-          Enable-LocalUser -Name $username
-          
-          echo "VPS_USERNAME=$username" >> $env:GITHUB_ENV
-          echo "VPS_PASSWORD=$password" >> $env:GITHUB_ENV
-          
-          Write-Host "✅ User '$username' created successfully"
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
+          }
 
-      - name: Install and Configure Web Server (IIS)
-        run: |
-          # Install IIS with features
-          Install-WindowsFeature -Name Web-Server, Web-WebServer, Web-Common-Http, Web-Default-Doc, Web-Dir-Browsing, Web-Http-Errors, Web-Static-Content, Web-Http-Logging, Web-Request-Monitor, Web-Performance, Web-Stat-Compression, Web-Dyn-Compression, Web-Security, Web-Filtering, Web-Windows-Auth, Web-App-Dev, Web-Net-Ext45, Web-Asp-Net45, Web-ISAPI-Ext, Web-ISAPI-Filter, Web-Mgmt-Tools -IncludeManagementTools
-          
-          # Create custom web page
-          $htmlContent = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Windows VPS Server</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .container { max-width: 800px; margin: 0 auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 15px; backdrop-filter: blur(10px); }
-        h1 { color: #fff; text-align: center; }
-        .info { background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px; margin: 10px 0; }
-        .status { color: #90EE90; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🚀 Windows VPS Server</h1>
-        <div class="info">
-            <p><strong>Status:</strong> <span class="status">Online</span></p>
-            <p><strong>Created:</strong> $(Get-Date)</p>
-            <p><strong>Duration:</strong> 7 Days</p>
-            <p><strong>Platform:</strong> Windows Server</p>
-        </div>
-        <div class="info">
-            <h3>📊 System Information</h3>
-            <p><strong>Hostname:</strong> $env:COMPUTERNAME</p>
-            <p><strong>OS:</strong> $(Get-WmiObject -Class Win32_OperatingSystem).Caption</p>
-            <p><strong>Memory:</strong> $([math]::Round((Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory/1GB, 2)) GB</p>
-            <p><strong>Processor:</strong> $(Get-WmiObject -Class Win32_Processor).Name</p>
-        </div>
-        <div class="info">
-            <h3>🔧 Available Services</h3>
-            <p>• Remote Desktop (RDP) - Port 3389</p>
-            <p>• Web Server (IIS) - Port 80</p>
-            <p>• HTTPS - Port 443</p>
-            <p>• SSH - Port 22</p>
-        </div>
-    </div>
-</body>
-</html>
-"@
-          
-          Set-Content -Path "C:\inetpub\wwwroot\index.html" -Value $htmlContent -Force
-          
-          # Start and configure IIS
-          Start-Service -Name W3SVC
-          Set-Service -Name W3SVC -StartupType Automatic
-          
-          Write-Host "✅ IIS Web Server installed and configured"
+          Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
 
-      - name: Install Development Tools
-        run: |
-          # Install Chocolatey
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          
-          # Refresh PATH
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          
-          # Install tools
-          choco install git -y --force
-          choco install nodejs -y --force
-          choco install python -y --force
-          choco install vscode -y --force
-          choco install curl -y --force
-          choco install 7zip -y --force
-          
-          Write-Host "✅ Development tools installed successfully"
+          echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
 
-      - name: Install Tailscale VPN
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
 
-          try {
-              Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-              Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-              Remove-Item $installerPath -Force
-              Write-Host "✅ Tailscale installed successfully"
-          } catch {
-              Write-Error "❌ Tailscale installation failed: $($_.Exception.Message)"
-              exit 1
-          }
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
 
-      - name: Establish Secure VPN Connection
+      - name: Establish Tailscale Connection
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-vps-$env:GITHUB_RUN_ID --accept-routes
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 15) {
+          while (-not $tsIP -and $retries -lt 10) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if (-not $tsIP) {
-                  Start-Sleep -Seconds 5
-                  $retries++
-              }
+              Start-Sleep -Seconds 5
+              $retries++
           }
           if (-not $tsIP) {
-              Write-Error "❌ Tailscale IP not assigned after $retries attempts"
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✅ Tailscale connected - IP: $tsIP"
 
-      - name: Verify All Services
+      - name: Verify RDP Accessibility
         run: |
-          Write-Host "🔍 Testing VPS Services..."
-          $vpsIP = $env:TAILSCALE_IP
-          
-          # Test RDP
-          $rdpTest = Test-NetConnection -ComputerName $vpsIP -Port 3389 -WarningAction SilentlyContinue
-          if ($rdpTest.TcpTestSucceeded) {
-              Write-Host "✅ RDP (3389) - Accessible"
-          } else {
-              Write-Host "❌ RDP (3389) - Failed"
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
           }
-          
-          # Test Web Server
-          $webTest = Test-NetConnection -ComputerName $vpsIP -Port 80 -WarningAction SilentlyContinue
-          if ($webTest.TcpTestSucceeded) {
-              Write-Host "✅ Web Server (80) - Accessible"
-          } else {
-              Write-Host "❌ Web Server (80) - Failed"
-          }
-          
-          # Test SSH
-          $sshTest = Test-NetConnection -ComputerName $vpsIP -Port 22 -WarningAction SilentlyContinue
-          if ($sshTest.TcpTestSucceeded) {
-              Write-Host "✅ SSH (22) - Accessible"
-          } else {
-              Write-Host "⚠️ SSH (22) - Not configured"
-          }
-          
-          # Test Ping
-          $pingTest = Test-Connection -ComputerName $vpsIP -Count 2 -Quiet
-          if ($pingTest) {
-              Write-Host "✅ ICMP Ping - Responsive"
-          } else {
-              Write-Host "⚠️ ICMP Ping - No response"
-          }
+          Write-Host "TCP connectivity successful!"
 
-      - name: Display VPS Information
+      - name: Maintain Connection
         run: |
-          $systemInfo = Get-ComputerInfo
-          $memoryGB = [math]::Round($systemInfo.CsTotalPhysicalMemory / 1GB, 2)
-          $osVersion = $systemInfo.WindowsVersion
-          $processor = $systemInfo.CsProcessors[0].Name
-          
-          Write-Host ""
-          Write-Host "=" * 60
-          Write-Host "🖥️  WINDOWS VPS SETUP COMPLETE"
-          Write-Host "=" * 60
-          Write-Host "📡 CONNECTION DETAILS:"
-          Write-Host "   VPS Address: $env:TAILSCALE_IP"
-          Write-Host "   Username: $env:VPS_USERNAME"
-          Write-Host "   Password: $env:VPS_PASSWORD"
-          Write-Host ""
-          Write-Host "🌐 SERVICES:"
-          Write-Host "   Remote Desktop: $env:TAILSCALE_IP:3389"
-          Write-Host "   Web Server: http://$env:TAILSCALE_IP"
-          Write-Host "   SSH: $env:TAILSCALE_IP:22"
-          Write-Host ""
-          Write-Host "⚙️  SYSTEM SPECS:"
-          Write-Host "   OS: Windows $osVersion"
-          Write-Host "   Memory: $memoryGB GB"
-          Write-Host "   Processor: $processor"
-          Write-Host ""
-          Write-Host "📦 INSTALLED SOFTWARE:"
-          Write-Host "   • Git, Node.js, Python, VSCode"
-          Write-Host "   • IIS Web Server, Tailscale VPN"
-          Write-Host "   • Chrome, 7-Zip, cURL"
-          Write-Host ""
-          Write-Host "⏰ DURATION: 7 DAYS (10080 minutes)"
-          Write-Host "=" * 60
-          Write-Host ""
-
-      - name: Maintain VPS Session
-        run: |
-          $startTime = Get-Date
-          $endTime = $startTime.AddMinutes(10080)
-          
-          while ((Get-Date) -lt $endTime) {
-              $remaining = $endTime - (Get-Date)
-              $hoursRemaining = [math]::Round($remaining.TotalHours, 1)
-              
-              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] VPS Active - $hoursRemaining hours remaining - IP: $env:TAILSCALE_IP"
-              
-              # Every 30 minutes, verify services are still running
-              if ([int](Get-Date -Format 'mm') % 30 -eq 0) {
-                  Write-Host "   🔄 Service check: RDP and Web services running"
-                  Get-Service TermService, W3SVC | Where-Object { $_.Status -ne 'Running' } | Start-Service
-              }
-              
-              Start-Sleep -Seconds 300  # Sleep for 5 minutes
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: TOOLBOXLAP"
+          Write-Host "Password: admin@123"
+          Write-Host "Duration: 7 DAYS"
+          Write-Host "==================`n"
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - 7 Days Session - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
           }
-          
-          Write-Host "⏰ VPS session completed after 7 days"
